@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"log/slog"
+	"os"
 	"os/signal"
 	"regexp"
 	"strings"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	k8scrdClient "github.com/changqings/k8scrd/client"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -19,9 +23,9 @@ import (
 )
 
 var (
-	SOME_IMAGE_HOST = ".*xx.com.*"
-	// SOME_IMAGE_HOST = ".*httpbin.*"
-	notWatchNs = "kube-system|kube-public|kube-node-lease"
+	KUBE_USED_NS    = "kube-system|kube-public|kube-node-lease"
+	not_watched_ns  string
+	some_image_host string
 )
 
 type PodUpdateRecord struct {
@@ -32,20 +36,45 @@ type PodUpdateRecord struct {
 }
 
 func main() {
-	client := k8scrdClient.GetClient()
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 
+	flag.StringVar(&some_image_host, "image-host", "", "image host regexp math you want to watch, like '.*tecnent.cloudtr.com.*'")
+	flag.StringVar(&not_watched_ns, "no-ns", KUBE_USED_NS, "ns name not watched, like:"+KUBE_USED_NS)
+	flag.Parse()
+	slog.Info("main run...")
+
+	if len(some_image_host) == 0 {
+		slog.Error("image-host empty", "msg", "image-host can't be empty, please set image host regexp match")
+		os.Exit(1)
+	}
+
+	restConfig := k8scrdClient.GetRestConfig()
+	// qps limits
+	restConfig.QPS = 50
+	restConfig.Burst = 100
+
+	client, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	WatchDeploy(client, ctx.Done(), notWatchNs)
+	WatchDeploy(client, ctx.Done(), not_watched_ns)
+	slog.Info("main ended")
 }
 
 func WatchDeploy(cs *kubernetes.Clientset, stopCh <-chan struct{}, notWatchedNs string) error {
 
-	informerFactory := informers.NewSharedInformerFactory(cs, time.Second*60)
-	deployInformer := informerFactory.Apps().V1().Deployments()
+	slog.Info("start run informerFactory ...")
 
 	notWatchNsSlice := strings.Split(notWatchedNs, "|")
+
+	// ns except
+	informerFactory := informers.NewSharedInformerFactoryWithOptions(cs, time.Second*60, informers.WithTweakListOptions(func(lo *metav1.ListOptions) {
+		lo.FieldSelector = getNotEqualFieldSelectorString(notWatchNsSlice)
+	}))
+	deployInformer := informerFactory.Apps().V1().Deployments()
 
 	deployInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		UpdateFunc: func(oldObj, newObj interface{}) {
@@ -58,11 +87,6 @@ func WatchDeploy(cs *kubernetes.Clientset, stopCh <-chan struct{}, notWatchedNs 
 			}
 
 			if oldDeploy.ResourceVersion == newDeploy.ResourceVersion {
-				return
-			}
-
-			if checkNsPass(notWatchNsSlice, oldDeploy.Namespace) {
-				// slog.Info("Skip", "msg", "not in watch ns", "ns", oldDeploy.Namespace, "deploy", oldDeploy.Name)
 				return
 			}
 
@@ -100,11 +124,12 @@ func WatchDeploy(cs *kubernetes.Clientset, stopCh <-chan struct{}, notWatchedNs 
 			}
 		},
 	})
-
 	informerFactory.Start(stopCh)
 	informerFactory.WaitForCacheSync(stopCh)
 
+	slog.Info("informerFactory run success")
 	<-stopCh
+	slog.Info("stop informerFactory...")
 	return nil
 
 }
@@ -113,7 +138,7 @@ func getImageTag(pod *appsv1.Deployment) map[string]string {
 
 	images := make(map[string]string)
 	for _, c := range pod.Spec.Template.Spec.Containers {
-		matched, err := regexp.MatchString(SOME_IMAGE_HOST, c.Image)
+		matched, err := regexp.MatchString(some_image_host, c.Image)
 		if err != nil {
 			// slog.Error("regexp match", "msg", err)
 			continue
@@ -125,14 +150,22 @@ func getImageTag(pod *appsv1.Deployment) map[string]string {
 	return images
 }
 
-func checkNsPass(nss []string, ns string) bool {
+func getNotEqualFieldSelectorString(nss []string) string {
 	if len(nss) == 0 {
-		return false
+		return ""
 	}
-	for _, v := range nss {
-		if ns == v {
-			return true
+
+	metadata_namespace := "metadata.namespace!="
+
+	var result string
+
+	for i, v := range nss {
+		if i == 0 {
+			result = metadata_namespace + v
+			continue
 		}
+		result = result + "," + metadata_namespace + v
+
 	}
-	return false
+	return result
 }
