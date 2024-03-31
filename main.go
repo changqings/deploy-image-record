@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	KUBE_USED_NS    = "kube-system|kube-public|kube-node-lease"
+	kube_system_used_ns    = "kube-system|kube-public|kube-node-lease"
 	not_watched_ns  string
 	some_image_host string
 	record_log_path = homedir.HomeDir() + "/.deploy_image_recore.log"
@@ -40,7 +40,7 @@ type PodUpdateRecord struct {
 func main() {
 
 	flag.StringVar(&some_image_host, "image-host", "", "image host regexp math you want to watch, like '.*tecnent.cloudtcr.com.*'")
-	flag.StringVar(&not_watched_ns, "no-ns", KUBE_USED_NS, "ns name not watched, like:"+KUBE_USED_NS)
+	flag.StringVar(&not_watched_ns, "no-ns", kube_system_used_ns, "ns name not watched, like:"+kube_system_used_ns)
 	flag.Parse()
 	slog.Info("main run...")
 
