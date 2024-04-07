@@ -27,7 +27,7 @@ var (
 	kube_system_used_ns    = "kube-system|kube-public|kube-node-lease"
 	not_watched_ns  string
 	some_image_host string
-	record_log_path = homedir.HomeDir() + "/.deploy_image_recore.log"
+	record_log_path = homedir.HomeDir() + "/.deploy_image_record.log"
 )
 
 type PodUpdateRecord struct {
